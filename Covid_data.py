@@ -3,6 +3,9 @@ import numpy as np
 import scipy as sc
 import datetime
 from sklearn import linear_model
+from sklearn import metrics
+import matplotlib.pyplot as plt
+
 
 class CovidMobility:
     COUNTY_DICT = {'Albany': 0, 'Allegany' : 1, 'Broome': 2, 'Cattaraugus' : 3, 'Cayuga' : 4, 'Chautauqua' : 5,
@@ -19,7 +22,7 @@ class CovidMobility:
         mobility_data = pd.read_csv(data_path)
         mobility_data.drop(mobility_data[mobility_data['country_region_code'] != "US"].index, inplace=True)
         mobility_data.drop(mobility_data[mobility_data['sub_region_1'] != "New York"].index, inplace=True)
-        fixer  = lambda x: datetime.datetime.strptime(x,'%y-%m-%d')
+        fixer  = lambda x: datetime.datetime.strptime(x,'%Y-%m-%d')
         mobility_data['date'] = mobility_data['date'].apply(fixer)
         grouped = mobility_data.groupby(['sub_region_2'])
         self.counties_indvidual = mobility_data['sub_region_2'].drop_duplicates().dropna()
@@ -70,6 +73,7 @@ class CovidMobility:
         for name, group in grouped:
             county = grouped.get_group(name)
             county = county.drop(['state','deaths','fips'],axis = 1)
+            county['change'] = county['cases'].shift(-1)-county['cases']
             self.counties_cases.append(county)
         i = 0
         for toxic in self.case_toxic_index:
@@ -80,6 +84,37 @@ class CovidMobility:
             del self.counties_mob[toxic[0][0] - j ]
             j+=1
 
+
+
+
+
+
+    def get_X(self,start_date, lag, county):
+        X = self.counties_mob[self.COUNTY_DICT[county]]
+        y = self.counties_cases[self.COUNTY_DICT[county]]
+        mob_start = startdate
+        case_start = startdate + datetime.timedelta(days = lag)
+        bool_mob = X['date'] > mob_start
+        bool_case = y['date'] > case_start
+        final_date_X = X.tail(1)['date'].to_numpy()
+        bool_end_y = y["date"] < final_date_X[0] + np.timedelta64(lag+1,'D')
+        X = X[bool_mob]
+        y = y[bool_case & bool_end_y]
+        mob = X.drop(['sub_region_2','census_fips_code','date'],axis = 1)
+        mob = mob.fillna(0)
+        return mob
+
+    def cases(self,start_date, lag, county):
+        X = self.counties_mob[self.COUNTY_DICT[county]]
+        bool_mob = X['date'] > start_date
+        X = X[bool_mob]
+        y = self.counties_cases[self.COUNTY_DICT[county]]
+        case_start = startdate + datetime.timedelta(days=lag)
+        bool_case = y['date'] > case_start
+        final_date_X = X.tail(1)['date'].to_numpy()
+        bool_end_y = y["date"] < final_date_X[0] + np.timedelta64(lag + 1, 'D')
+        return y[bool_case & bool_end_y]
+
     def regression_approach(self,start_date, lag, county):
         X = self.counties_mob[self.COUNTY_DICT[county]]
         y = self.counties_cases[self.COUNTY_DICT[county]]
@@ -88,14 +123,21 @@ class CovidMobility:
         bool_mob = X['date'] > mob_start
         bool_case = y['date'] > case_start
         final_date_X = X.tail(1)['date'].to_numpy()
-        bool_end_y = y["date"] < final_date_X[0] + datetime.timedelta(days = lag)
+        bool_end_y = y["date"] < final_date_X[0] + np.timedelta64(lag+1,'D')
         X = X[bool_mob]
         y = y[bool_case & bool_end_y]
-        lm = linear_model.LinearRegression()
-        model_cases = lm.fit(X,cases)
-        test = lm.predict(X)
-        print(lm.score(X,cases))
+        mobility = X[['retail_and_recreation_percent_change_from_baseline','parks_percent_change_from_baseline']]
+        ##X.drop(['sub_region_2','census_fips_code','date'],axis = 1)
+
+        mobility = mobility.fillna(0)
+        cases = y['change']
+        cases = cases.dropna()
+        lm = linear_model.Ridge(alpha =
+                                .8)
+        model_cases = lm.fit(mobility,cases)
+        print(lm.score(mobility,cases))
         return model_cases
+
 
 
 
@@ -113,5 +155,25 @@ print(CovidMobility.county_fixer('New York County'))
 cov = CovidMobility()
 cov.get_mobility_data("Global_Mobility_Report.csv")
 cov.get_case_data("Raw_Covid_Case_Data.csv")
-startdate = datetime.datetime(2020,3,10)
-cov.regression_approach(start_date = startdate, lag = 4 ,county = 'Albany')
+startdate = datetime.datetime(2020,3,1)
+lag_list = [3,5,7,10,14,18,20]
+accruacy = []
+
+
+model = cov.regression_approach(start_date = startdate, lag = 7,county = 'New York')
+test_data = cov.get_X(start_date = startdate, lag = 7,county = 'New York')
+test_data = test_data.drop(['retail_and_recreation_percent_change_from_baseline','parks_percent_change_from_baseline'],axis = 1)
+pedictions = model.predict(test_data)
+cases = cov.cases(start_date = startdate, lag = 7 ,county = 'New York')['change']
+valid = metrics.mean_squared_error(y_pred= pedictions,y_true = cases)
+
+print(valid)
+for lag in lag_list:
+    model = cov.regression_approach(start_date=startdate, lag=lag, county='New York')
+    test_data = cov.get_X(start_date=startdate, lag=lag, county='New York')
+
+    test_data = test_data[['retail_and_recreation_percent_change_from_baseline','parks_percent_change_from_baseline']]
+    pedictions = model.predict(test_data)
+    cases = cov.cases(start_date=startdate, lag=lag, county='New York')['change']
+    valid = metrics.mean_squared_error(y_pred=pedictions, y_true=cases)
+    print(valid)
